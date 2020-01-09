@@ -1,6 +1,6 @@
 # Machine Learning in Numpy
 ## Implementing Machine Learning Models from scratch
 
-- Neural Networks
+- Feed Forward Neural Networks
 - K Nearest Neighbors
 - Decision Trees
