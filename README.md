@@ -2,5 +2,4 @@
 ## Implementing Machine Learning Models from scratch
 
 - Feed Forward Neural Networks
-- K Nearest Neighbors
-- Decision Trees
+- Reccurent Neural Networks
