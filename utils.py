@@ -5,6 +5,8 @@ def tanh(x):
 
 
 def softmax(x):
+    _max = np.max(x, axis=0)
+    x = x - _max
     x = np.exp(x)
     return x/np.sum(x, axis=0, keepdims=True)
 
