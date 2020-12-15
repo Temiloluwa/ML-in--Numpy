@@ -9,13 +9,17 @@ class RNN(ABC):
     """
     _timestep = 1
     _named_parameters = None
+    _parameters_initialized = False
     _initializer = None
+    _hidden_state_dims = None
     _hidden_states = []
-    _cell_states = []
     _outputs = []
+    _cell_states = []
     
-    def __init__(self, a_init=None, c_init=None):
-        self.initialize_parameters(a_init, c_init)
+    def __init__(self, is_lstm=False, stateful=False):
+        self._is_lstm = is_lstm
+        self._stateful = stateful
+        
            
     @property
     def hidden_state(self):
@@ -53,72 +57,122 @@ class RNN(ABC):
     @abstractmethod
     def backward(self):
         pass
+
+
+    def __call__(self, X):
+        if X.ndim < 3:
+            raise ValueError("Inputs should have at least 3 dimensions")
+        elif X.ndim > 3:
+            new_shape = (-1,) + X.shape[-2:]
+            X = X.reshape(new_shape)
+
+        if not self._parameters_initialized:
+            self.initialize_parameters()
+            self._parameters_initialized = True
+        
+        bs, sequence_len, _ = X.shape
+        a_prev = np.zeros((bs, self._hidden_state_dims))
+        c_prev = np.zeros((bs, self._hidden_state_dims)) if self._is_lstm else None
+        self.reset_states(a_prev, c_prev)
+
+        for _ in range(sequence_len):
+            x = X[:, self._timestep - 1, :]
+            if self._is_lstm:
+                a_prev, c_prev, y = self.forward(x, a_prev, c_prev)
+                self._cell_states.append(c_prev)
+            else:
+                a_prev, y = self.forward(x, a_prev)
+
+            self._hidden_states.append(a_prev)
+            self._outputs.append(y)
+            self._timestep += 1
+        self._timestep = 0
+        
     
-    def initialize_parameters(self, a_init, c_init):
+    def initialize_parameters(self):
         """
             Initialize hidden state and cell parameters
             Initialize initial hidden and cell states
         """
         initializer_fn = getattr(self, self._initializer)
         self._named_parameters = initializer_fn()
-        if a_init is not None:
-            self._hidden_states.append(a_init)
-        
-        if c_init is not None:
-            self._cell_states.append(c_init)
+
+
+    def reset_states(self, a_prev, c_prev):
+        if self._stateful and self._hidden_states is not []:
+            self._hidden_states = [self._hidden_states[0]]
+            if self._is_lstm:
+                self._cell_states = [self._cell_states[0]]
+        else:
+            self._hidden_states = [a_prev]
+            if self._is_lstm:
+                self._cell_states = [c_prev]        
 
 
 class VanillaRNN(RNN):
     """
     Vanilla RNN class
     """
-    def __init__(self, input_dims,
+    def __init__(self, hidden_state_dims,
                        output_dims,
-                       a_init=None, 
-                       initializer="random_initializer"):
-        self._input_dims = input_dims
+                       initializer="random_initializer",
+                       is_lstm=False, 
+                       stateful=False):
+        self._hidden_state_dims = hidden_state_dims
         self._output_dims = output_dims
-        self._hidden_state_dims = a_init.shape[0]
         self._initializer = initializer
-        super(VanillaRNN, self).__init__(a_init)
-        
-    
-    def __call__(self, X):
-        a_prev = self.prev_hidden_state
-        x = X[:, :, self._timestep - 1]
-        return self.forward(x, a_prev)
+        super(VanillaRNN, self).__init__(is_lstm, stateful)
         
     
     @property
     def cell_state(self):
         raise NotImplementedError("Vanilla RNNs have no cell state")
-    
 
+    def __call__(self, 
+                X, 
+                return_sequences=False):
+
+        self._embed_dims = X.shape[-1]
+        super(VanillaRNN, self).__call__(X)
+        return self._hidden_states[-1], self._outputs[-1]
+       
+        
     def forward(self, x, a_prev):
-        weights = np.hstack([self.named_parameters["Waa"], self.named_parameters["Wax"]])
-        inputs = np.vstack([a_prev , x])
-        Wy = self.named_parameters["Wya"]
+        weights = np.vstack([self.named_parameters["Waa"], self.named_parameters["Wxa"]])
+        inputs = np.hstack([a_prev , x])
+        Wy = self.named_parameters["Way"]
         ba = self.named_parameters["ba"]
         by = self.named_parameters["by"]
-        a_next = tanh(weights.dot(inputs) + ba)
-        y = softmax(Wy.dot(a_next) + by)
-        self._hidden_states.append(a_next)
-        self._outputs.append(y)
-        self._timestep += 1
+        a_next = tanh(inputs.dot(weights) + ba)
+        y = softmax(a_next.dot(Wy) + by)
         return a_next, y
+        
     
     def backward(self):
         pass
     
-    def random_initializer(self):
+    def random_initializer(self, kwargs):
         named_parameters = {
-            "Wax": np.random.rand(self._hidden_state_dims, self._input_dims),
+            "Wxa": np.random.rand(self._embed_dims, self._hidden_state_dims),
             "Waa": np.random.rand(self._hidden_state_dims, self._hidden_state_dims),
-            "Wya": np.random.rand(self._output_dims, self._hidden_state_dims),
-            "ba" : np.random.rand(self._hidden_state_dims, 1),
-            "by" : np.random.rand(self._output_dims, 1)
+            "Way": np.random.rand(self._hidden_state_dims, self._output_dims),
+            "ba" : np.random.rand(1, self._hidden_state_dims),
+            "by" : np.random.rand(1, self._output_dims)
         }
+
         return named_parameters
+
+    def ones_initializer(self):
+        named_parameters = {
+            "Wxa": np.ones((self._embed_dims, self._hidden_state_dims)),
+            "Waa": np.ones((self._hidden_state_dims, self._hidden_state_dims)),
+            "Way": np.ones((self._hidden_state_dims, self._output_dims)),
+            "ba" : np.ones((1, self._hidden_state_dims)),
+            "by" : np.ones((1, self._output_dims))
+        }
+
+        return named_parameters
+
 
 
 
@@ -127,14 +181,13 @@ class LSTM(RNN):
     LSTM RNN class
 
     """
-    def __init__(self, input_dims,
+    def __init__(self, embed_dims,
                        output_dims,
                        a_init=None,
                        c_init=None, 
                        initializer="random_initializer"):
-        self._input_dims = input_dims
+        self._embed_dims = embed_dims
         self._output_dims = output_dims
-        self._hidden_state_dims = a_init.shape[0]
         self._initializer = initializer
         super(LSTM, self).__init__(a_init, c_init)
     
@@ -178,10 +231,10 @@ class LSTM(RNN):
     
     def random_initializer(self):
         named_parameters = {
-            "Wf": np.random.rand(self._hidden_state_dims, self._hidden_state_dims + self._input_dims),
-            "Wi": np.random.rand(self._hidden_state_dims, self._hidden_state_dims + self._input_dims),
-            "Wc": np.random.rand(self._hidden_state_dims, self._hidden_state_dims + self._input_dims),
-            "Wo": np.random.rand(self._hidden_state_dims, self._hidden_state_dims + self._input_dims),
+            "Wf": np.random.rand(self._hidden_state_dims, self._hidden_state_dims + self._embed_dims),
+            "Wi": np.random.rand(self._hidden_state_dims, self._hidden_state_dims + self._embed_dims),
+            "Wc": np.random.rand(self._hidden_state_dims, self._hidden_state_dims + self._embed_dims),
+            "Wo": np.random.rand(self._hidden_state_dims, self._hidden_state_dims + self._embed_dims),
             "Wy": np.random.rand(self._output_dims, self._hidden_state_dims),
             "bf" : np.random.rand(self._hidden_state_dims, 1),
             "bi" : np.random.rand(self._hidden_state_dims, 1),
@@ -191,31 +244,3 @@ class LSTM(RNN):
         }
         return named_parameters
 
-
-class SequenceModel:
-    """
-    Sequence Model
-    
-    Args:
-        num_time_steps - number of time steps
-        rnn_model - rnn model object
-    """
-    def __init__(self, num_time_steps, rnn_model):
-        self.num_time_steps = num_time_steps
-        self.model = rnn_model
-            
-    def __call__(self, X):
-        for i in range(self.num_time_steps):
-            outputs = self.model(X) 
-        return outputs
-
-    def get_timestep_outputs(self, timestep):
-        output = {
-            "hidden_state": self.model._hidden_states[timestep - 1],
-            "y_output": self.model._outputs[timestep - 1]
-        }
-        
-        if len(self.model._cell_states) != 0:
-            output.update({"cell_state": self.model._cell_states[timestep - 1]})
-
-        return output
